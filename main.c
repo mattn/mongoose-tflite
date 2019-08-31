@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+static JSON_Array *labels_array;
+
 const char *base_path = ".";
 static const char *s_http_port = "5000";
 static struct mg_serve_http_opts s_http_server_opts;
@@ -15,56 +17,6 @@ struct file_writer_data {
   unsigned char *data;
   unsigned long bytes_written;
 };
-
-void
-handle_version(struct mg_connection *nc, int ev, void *p) {
-  JSON_Value *root_value = json_value_init_object();
-  JSON_Object *root_object = json_value_get_object(root_value);
-  json_object_set_string(root_object, "model", "v1.0.0");
-  char *serialized_string = json_serialize_to_string(root_value);
-
-  mg_printf(nc, "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/json\r\n"
-      "Content-Length: %lu\r\n\r\n%s",
-      (unsigned long) strlen(serialized_string),
-      serialized_string);
-
-  json_free_serialized_string(serialized_string);
-  json_value_free(root_value);
-  return;
-}
-
-void
-handle_label(struct mg_connection *nc, int ev, void *p) {
-  FILE *fp = fopen("labels.txt", "r");
-  if (!fp) {
-    mg_printf(nc, "HTTP/1.1 500 Failed to open a file\r\n"
-        "Content-Length: 0\r\n\r\n");
-    nc->flags |= MG_F_SEND_AND_CLOSE;
-    return;
-  }
-  char buf[BUFSIZ];
-  JSON_Value *labels_value = json_value_init_array();
-  JSON_Array *labels_array = json_value_get_array(labels_value);
-  while (fgets(buf, BUFSIZ, fp)) {
-    char *p = strpbrk(buf, "\r\n");
-    if (p) *p = 0;
-    json_array_append_value(labels_array, json_value_init_string(buf));
-  }
-  fclose(fp);
-
-  char *serialized_string = json_serialize_to_string(labels_value);
-
-  mg_printf(nc, "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/json\r\n"
-      "Content-Length: %lu\r\n\r\n%s",
-      (unsigned long) strlen(serialized_string),
-      serialized_string);
-
-  json_free_serialized_string(serialized_string);
-  json_value_free(labels_value);
-  return;
-}
 
 static void
 handle_upload(struct mg_connection *nc, int ev, void *p) {
@@ -119,18 +71,15 @@ handle_upload(struct mg_connection *nc, int ev, void *p) {
           nc->user_data = NULL;
           return;
         }
-        JSON_Value *root_value = json_value_init_object();
-        JSON_Object *root_object = json_value_get_object(root_value);
-        JSON_Value *labels_value = json_value_init_array();
-        JSON_Array *labels_array = json_value_get_array(labels_value);
+        JSON_Value *root_value = json_value_init_array();
+        JSON_Array *root_array = json_value_get_array(root_value);
         for (int i = 0; i < nresult; i++) {
           JSON_Value *label_value = json_value_init_object();
           JSON_Object *label_object = json_value_get_object(label_value);
-          json_object_set_number(label_object, "index", results[i].index);
+          json_object_set_string(label_object, "label", json_array_get_string(labels_array, results[i].index));
           json_object_set_number(label_object, "probability", results[i].probability);
-          json_array_append_value(labels_array, label_value);
+          json_array_append_value(root_array, label_value);
         }
-        json_object_set_value(root_object, "labels", labels_value);
         char *serialized_string = json_serialize_to_string(root_value);
 		if (serialized_string) {
           mg_printf(nc, "HTTP/1.1 200 OK\r\n"
@@ -175,9 +124,23 @@ signal_handler(int sig_num) {
 
 int
 main(void) {
+  FILE *fp = fopen("labels.txt", "r");
+  if (!fp) {
+    fprintf(stderr, "cannot load labels.txt\n");
+    return 1;
+  }
+  char buf[BUFSIZ];
+  JSON_Value *labels_value = json_value_init_array();
+  labels_array = json_value_get_array(labels_value);
+  while (fgets(buf, BUFSIZ, fp)) {
+    char *p = strpbrk(buf, "\r\n");
+    if (p) *p = 0;
+    json_array_append_value(labels_array, json_value_init_string(buf));
+  }
+  fclose(fp);
+
   struct mg_mgr mgr;
   struct mg_connection *c;
-
   initialize_detect("mobilenet_quant_v1_224.tflite");
 
   mg_mgr_init(&mgr, NULL);
@@ -189,8 +152,6 @@ main(void) {
 
   s_http_server_opts.document_root = "assets";  // Serve current directory
   s_http_server_opts.enable_directory_listing = "yes";
-  mg_register_http_endpoint(c, "/label", handle_label MG_UD_ARG(NULL));
-  mg_register_http_endpoint(c, "/version", handle_version MG_UD_ARG(NULL));
   mg_register_http_endpoint(c, "/upload", handle_upload MG_UD_ARG(NULL));
   mg_set_protocol_http_websocket(c);
 
@@ -201,6 +162,8 @@ main(void) {
     mg_mgr_poll(&mgr, 100);
   }
   mg_mgr_free(&mgr);
+
+  json_value_free(labels_value);
 
   return 0;
 }

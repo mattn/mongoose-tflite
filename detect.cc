@@ -11,17 +11,6 @@
 
 #include "detect.h"
 
-template<typename T>
-void
-fill(T *in, cv::Mat& src) {
-  int n = 0, nc = src.channels(), ne = src.elemSize();
-  for (int y = 0; y < src.rows; ++y)
-    for (int x = 0; x < src.cols; ++x)
-      for (int c = 0; c < nc; ++c)
-        in[n++] = (((float)src.data[y * src.step + x * ne + (nc - c)]) - 127.5) / 127.5;
-        //in[n++] = ((float)src.data[y * src.step + x * ne + (nc - c)]) / 255;
-}
-
 static std::unique_ptr<tflite::FlatBufferModel> model;
 static std::unique_ptr<tflite::Interpreter> interpreter;
 static int wanted_height;
@@ -83,10 +72,21 @@ detect_object(
   cv::resize(frame, resized, resized.size(), cv::INTER_CUBIC);
 
   if (wanted_type == kTfLiteFloat32) {
-    fill(in16, resized);
+    int n = 0, nc = resized.channels(), ne = resized.elemSize();
+    if (nc > wanted_channels) nc = wanted_channels;
+    for (int y = 0; y < resized.rows; ++y)
+      for (int x = 0; x < resized.cols; ++x)
+        for (int c = 0; c < nc; ++c)
+          in16[n++] = (float)resized.data[(y * resized.cols + x) * ne + c] / 255.0;
   } else if (wanted_type == kTfLiteUInt8) {
-    fill(in8, resized);
+    int n = 0, nc = resized.channels(), ne = resized.elemSize();
+    if (nc > wanted_channels) nc = wanted_channels;
+    for (int y = 0; y < resized.rows; ++y)
+      for (int x = 0; x < resized.cols; ++x)
+        for (int c = 0; c < nc; ++c)
+          in8[n++] = (uint8_t)resized.data[(y * resized.cols + x) * ne + c];
   }
+
 
   status = interpreter->Invoke();
   if (status != kTfLiteOk) {
@@ -112,10 +112,9 @@ detect_object(
   } else if (wanted_type == kTfLiteUInt8) {
     uint8_t *scores = interpreter->typed_output_tensor<uint8_t>(0);
     for (int i = 0; i < output_size; ++i) {
-      printf("%d\n", scores[i]);
       float value = ((float)scores[i]) / 255.0;
-      //if (value < 0.2)
-        //continue;
+      if (value < 0.2)
+        continue;
       results.push_back(std::pair<float, int>(value, i));
     }
   }
