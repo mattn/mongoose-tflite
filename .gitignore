@@ -1,0 +1,9 @@
+*.o
+mongoose-tflite
+compile_flags.txt
+data/
+*.zip
+output_graph.tflite
+output_labels.txt
+tags
+*.exe
